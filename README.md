@@ -1,6 +1,6 @@
 ## Setting up your Python Environment
 
-We will use a shared environment to ensure everyone's code runs on everyone else's machine.
+While not required, I recommend creading a python enviroment using conda or UV. For Conda:
 
 1.  **Install Mamba or Miniconda**: If you don't have it, install [Miniforge](https://github.com/conda-forge/miniforge) (recommended) or Anaconda.
 2.  **Download the file**: Save `environment.yml` to your project folder.
