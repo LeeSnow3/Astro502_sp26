@@ -1,0 +1,41 @@
+name: astr502
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python & Data Science
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - seaborn  # Nice default plotting styles
+  - h5py     # Handling large data files (Isochrones often use HDF5)
+  - tqdm     # Progress bars (critical for looping through 200+ stars)
+
+  # Notebooks & IDE
+  - jupyter
+  - jupyterlab
+  - ipykernel
+
+  # Astronomy Base
+  - astropy
+  - astroquery  # For Gaia, Simbad, Vizier, Mast (Architects/Chemists)
+  - pyvo        # Virtual Observatory access (ESO Archive)
+
+  # Team Specific Tools
+  - lightkurve  # Team 2: Time Domain (TESS/Kepler)
+  - specutils   # Team 1: Spectroscopy
+  - photutils   # Team 4: Photometry utilities (often useful for background estimation)
+  
+  # Statistics & Fitting (For Modelers/Isochrones)
+  - emcee       # MCMC sampler
+  - dynesty     # Nested Sampling (often required by isochrones)
+  - corner      # For making "Triangle Plots" of age posteriors
+  
+  # Pip-specific installations
+  # (Some astro-packages are updated faster on PyPI than Conda)
+  - pip
+  - pip:
+    - isochrones  # Team 3: Timothy Morton's package
+    - mwdust      # 3D Dust maps (helpful for Architects calculating extinction)
