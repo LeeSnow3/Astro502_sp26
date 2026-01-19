@@ -45,8 +45,10 @@ def plot_bhac15_data():
     #plot isochrones
     plt.figure(figsize=(8, 6))
     plt.title('Bhac15 1 Gyr 5 Gyr Isochrones', fontsize=16)
-    plt.scatter(teff1, logL1, label='1 Gyr')
-    plt.scatter(teff2, logL2, label='5 Gyr')
+    plt.scatter(teff1, logL1, label='1 Gyr', color = "blue")
+    plt.scatter(teff2, logL2, label='5 Gyr', color = "orange")
+    plt.plot(teff1, logL1, color='blue', linestyle='-',  zorder=2)
+    plt.plot(teff2, logL2, color='orange', linestyle='-', zorder=2)
     plt.xlabel('Effective Temperature (K)')
     plt.ylabel('log(L/L⊙)')
     plt.gca().invert_xaxis()  # Cooler stars on the right
