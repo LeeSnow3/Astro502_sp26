@@ -56,7 +56,8 @@ def plot_bhac15_data():
     plt.legend()
     plt.tight_layout()
     plt.savefig('bhac_isochrones.png', dpi=150, bbox_inches='tight')
-    plt.show()  
+    plt.show()
+
 
 
 if __name__ == "__main__":

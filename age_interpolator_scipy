@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import numpy as np
+from scipy.optimize import least_squares
+from isochrones import get_ichrone
+
+# Build once (cache it) so you don't reload grids every call.
+_TRACKS = get_ichrone("mist", tracks=True)
+
+BANDS = ["BP_mag", "G_mag", "RP_mag", "J_mag", "H_mag", "K_mag"]
+
+
+def get_model_mag(
+    mass: float,
+    age: float,
+    feh: float,
+    *,
+    distance: float = 10.0,
+    AV: float = 0.0,
+) -> dict[str, float]:
+    out = _TRACKS.generate(mass, age, feh, distance=distance, AV=AV, return_dict=True)
+    return {b: float(out[b]) for b in BANDS}
+
+
+def residuals(theta: np.ndarray,
+              mags_obs: np.ndarray,
+              mags_err: np.ndarray,
+              parallax_mas: float,
+              parallax_err_mas: float,
+              AV_fixed: float = 0.0) -> np.ndarray:
+    """
+    theta = [mass, age, feh, ln_distance]
+    returns residual vector = [(model-obs)/sigma for each mag] + [parallax residual]
+    """
+    mass, age, feh, ln_d = theta
+    d = float(np.exp(ln_d))
+
+    # Hard guardrails
+    if (d <= 0) or (not np.isfinite(d)):
+        return np.full(len(BANDS) + 1, 1e6)
+
+    try:
+        m = get_model_mag(mass, age, feh, distance=d, AV=AV_fixed)
+        mags_model = np.array([m[b] for b in BANDS], dtype=float)
+    except Exception:
+        # generate() can fail / go out of bounds
+        return np.full(len(BANDS) + 1, 1e6)
+
+    if not np.all(np.isfinite(mags_model)):
+        return np.full(len(BANDS) + 1, 1e6)
+
+    # photometric residuals
+    r_phot = (mags_model - mags_obs) / mags_err
+
+    # parallax residual (model parallax = 1000/d)
+    plx_model = 1000.0 / d
+    r_plx = np.array([(plx_model - parallax_mas) / parallax_err_mas], dtype=float)
+
+    return np.concatenate([r_phot, r_plx])
+
+
+def fit_mass_age_feh_from_bpg_rp(
+    *,
+    BP: float, G: float, RP: float, J: float, H: float, K: float,
+    e_BP: float, e_G: float, e_RP: float, e_J: float, e_H: float, e_K: float,
+    parallax_mas: float,
+    parallax_err_mas: float,
+    AV_fixed: float = 0.0,
+) -> dict[str, float]:
+
+    mags_obs = np.array([BP, G, RP, J, H, K], dtype=float)
+    mags_err = np.array([e_BP, e_G, e_RP, e_J, e_H, e_K], dtype=float)
+
+    # Initial guesses
+    d0 = 1000.0 / parallax_mas
+    theta0 = np.array([1.0, 9.7, 0.0, np.log(d0)], dtype=float)  # mass, logAge, feh, ln(d)
+
+    # Bounds (tune as you like)
+    # mass in Msun, age in log10(years), feh in dex, distance in pc
+    mass_bounds = (0.1, 5.0)
+    age_bounds  = (5.0, 10.2)
+    feh_bounds  = (-2.0, 0.5)
+
+    d_lo = max(0.1, 0.1 * d0)
+    d_hi = 10.0 * d0
+
+    lb = np.array([mass_bounds[0], age_bounds[0], feh_bounds[0], np.log(d_lo)], dtype=float)
+    ub = np.array([mass_bounds[1], age_bounds[1], feh_bounds[1], np.log(d_hi)], dtype=float)
+
+    res = least_squares(
+        residuals,
+        theta0,
+        bounds=(lb, ub),
+        kwargs=dict(
+            mags_obs=mags_obs,
+            mags_err=mags_err,
+            parallax_mas=parallax_mas,
+            parallax_err_mas=parallax_err_mas,
+            AV_fixed=AV_fixed,
+        ),
+        method="trf",
+        loss="linear",     # pure chi^2
+        max_nfev=2000,
+    )
+
+    mass_fit, age_fit, feh_fit, ln_d_fit = res.x
+    d_fit = float(np.exp(ln_d_fit))
+
+    chi2 = float(np.sum(res.fun**2))
+    dof = int(len(res.fun) - len(res.x))
+
+    return {
+        "mass": float(mass_fit),
+        "age": float(age_fit),
+        "feh": float(feh_fit),
+        "distance_pc": d_fit,
+        "chi2": chi2,
+        "dof": dof,
+        "red_chi2": chi2 / dof if dof > 0 else np.nan,
+        "success": bool(res.success),
+        "message": res.message,
+    }
+
+
+if __name__ == "__main__":
+    # Example test (HD 209458)
+    fit = fit_mass_age_feh_from_bpg_rp(
+        BP=7.793283074,
+        G=7.521244378,
+        RP=7.080287415,
+        J =6.591,  
+        H =6.366,  
+        K =6.308, 
+        e_BP=0.0238641460537352,
+        e_G=0.0183144879635296, 
+        e_RP=0.0264984319384077, 
+        e_J=0.02, 
+        e_H=0.038, 
+        e_K=0.026,
+        parallax_mas=20.76938988528240,
+        parallax_err_mas=0.1,
+        AV_fixed=0.0,
+    )
+
+    fit["age_log10yr"] = fit.pop("age")
+    fit["age_gyr"] = 10**fit["age_log10yr"] / 1e9
+
+    print(fit)

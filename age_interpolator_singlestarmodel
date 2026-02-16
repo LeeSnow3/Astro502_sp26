@@ -1,0 +1,101 @@
+from __future__ import annotations
+from isochrones import get_ichrone, SingleStarModel
+
+import pandas as pd
+import numpy as np
+import pprint
+import time
+
+def read_star_row_from_csv(
+    csv_path: str,
+    index: int = 0,
+    sigma_mag: float = 0.02,
+    sigma_parallax: float = 0.1,
+):
+    """
+    Reads one row from CSV and converts it into
+    a dictionary suitable for SingleStarModel.
+
+    Parameters
+    ----------
+    csv_path : path to CSV
+    index : which row to select
+    sigma_mag : assumed photometric uncertainty (mag)
+    sigma_parallax : assumed parallax uncertainty (mas)
+
+    Returns
+    -------
+    dict ready for SingleStarModel
+    """
+
+    df = pd.read_csv(csv_path)
+    print(f"Pl_name: {df.iloc[index]['pl_name']}")
+    # Select row
+    row = df.iloc[index]
+
+    # Build props dict
+    props = {}
+
+    # --- Parallax (required) ---
+    if not np.isnan(row["st_parallax_mas"]):
+        props["parallax"] = (row["st_parallax_mas"], sigma_parallax)
+
+    # --- Photometry ---
+    band_map = {
+        "sy_gaiamag": "G_mag",
+        "sy_jmag": "J_mag",
+        "sy_kmag": "K_mag",
+        "sy_tmag": "TESS_mag",
+        "sy_kepmag": "Kepler_mag",
+        "sy_vmag": "V_mag",  # Only include if MIST supports V
+    }
+
+    for csv_col, iso_key in band_map.items():
+        if csv_col in row and not np.isnan(row[csv_col]):
+            props[iso_key] = (row[csv_col], sigma_mag)
+
+    # Optional spectroscopic constraints (if present)
+    if not np.isnan(row.get("st_teff", np.nan)):
+        props["Teff"] = (row["st_teff"], 100.0)
+
+    if not np.isnan(row.get("st_logg", np.nan)):
+        props["logg"] = (row["st_logg"], 0.1)
+
+    if not np.isnan(row.get("st_met", np.nan)):
+        props["feh"] = (row["st_met"], 0.1)
+
+    return props
+
+
+
+mist = get_ichrone("mist")
+
+props = read_star_row_from_csv(
+    "mega_target_list.csv",
+    index=4256,
+    sigma_mag=0.02,
+    sigma_parallax=0.05,
+)
+time0 = time.time()
+mod = SingleStarModel(mist, name="csv_star", **props)
+
+# Run posterior sampling (nested sampling)
+mod.fit(verbose=False)
+
+samples = mod.samples
+samples["age_gyr"] = 10**samples["age"] / 1e9
+
+def summarize(df: pd.DataFrame, cols):
+    out = {}
+    for c in cols:
+        if c not in df.columns:
+            continue
+        q16, q50, q84 = np.percentile(df[c].values, [16, 50, 84])
+        out[c] = (q50, q50 - q16, q84 - q50)
+    return out
+
+time1 = time.time()
+summary = summarize(samples, ["mass", "lnmass", "age", "age_gyr", "feh", "distance"])
+
+print(f"Fitting took {time1 - time0:.2f} seconds.")
+print(summary)
