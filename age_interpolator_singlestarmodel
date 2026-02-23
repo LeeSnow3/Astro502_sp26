@@ -6,35 +6,55 @@ import numpy as np
 import pprint
 import time
 
+def props_to_singlestarmodel_kwargs(props: dict) -> dict:
+    """
+    Convert:
+      G_mag=<float>, G_mag_err=<float>
+    into:
+      G_mag=(value, err)
+    Also preserves parallax=(value, err).
+    """
+    out: dict = {}
+
+    # parallax is already (val, err) in your reader
+    if "parallax" in props:
+        out["parallax"] = props["parallax"]
+
+    # convert *_mag + *_mag_err pairs into tuples
+    for k, v in props.items():
+        if not k.endswith("_mag"):
+            continue
+        err_key = f"{k}_err"
+        if err_key not in props:
+            continue
+        out[k] = (float(v), float(props[err_key]))
+
+    # Optional spectroscopic constraints if you add them later in your reader:
+    for k in ("Teff", "logg", "feh"):
+        if k in props and f"{k}_err" in props:
+            out[k] = (float(props[k]), float(props[f"{k}_err"]))
+
+    return out
 
 
 mist = get_ichrone("mist")
+stars = ["HIP 65 A", "WASP-136","KELT-1","HATS-34", "WASP-96","TOI-198","WASP-44","Gliese 12","WASP-32","WASP-158",
+             "HD 1397","TOI-6016","WASP-26","TOI-260","Qatar-4","WASP-20","WASP-1","WASP-45","HATS-30", "TOI-5322","HATS-49","HATS-46","Qatar-5","TOI-178"]
+for host_name in stars:
+    props = read_star_row_from_csv(
+        host_name=host_name,
+        sigma_mag=True,
+        sigma_parallax=0.2, #not included in csv
+    )
+    props = props_to_singlestarmodel_kwargs(props)
+    mod = SingleStarModel(mist, name="csv_star", **props)
 
-props = read_star_row_from_csv(
-    host_name="HD 209458",
-    sigma_mag=True,
-    sigma_parallax=0.2, #not included in csv
-)
-time0 = time.time()
-mod = SingleStarModel(mist, name="csv_star", **props)
+    # Run posterior sampling (nested sampling)
+    mod.fit(verbose=False)
 
-# Run posterior sampling (nested sampling)
-mod.fit(verbose=False)
-
-samples = mod.samples
-samples["age_gyr"] = 10**samples["age"] / 1e9
-
-def summarize(df: pd.DataFrame, cols):
-    out = {}
-    for c in cols:
-        if c not in df.columns:
-            continue
-        q16, q50, q84 = np.percentile(df[c].values, [16, 50, 84])
-        out[c] = (q50, q50 - q16, q84 - q50)
-    return out
-
-time1 = time.time()
-summary = summarize(samples, ["mass", "lnmass", "age", "age_gyr", "feh"])
-
-print(f"Fitting took {time1 - time0:.2f} seconds.")
-print(summary)
+    samples = mod.samples
+    samples["age_gyr"] = 10**samples["age"] / 1e9
+    samples["Star"] = host_name
+    #write median results to csv
+    median_samples = samples.groupby("Star").median(numeric_only=True)
+    median_samples.to_csv("age_fit_results_isochrones.csv", index=False)
