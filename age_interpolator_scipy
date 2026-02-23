@@ -149,8 +149,7 @@ def fit_mass_age_feh_from_props(
 
 
 if __name__ == "__main__":
-    stars = ["HIP 65 A", "WASP-136","KELT-1","HATS-34", "WASP-96","TOI-198","WASP-44","Gliese 12","WASP-32","WASP-158",
-             "HD 1397","TOI-6016","WASP-26","TOI-260","Qatar-4","WASP-20","WASP-1","WASP-45","HATS-30", "TOI-5322","HATS-49","HATS-46","Qatar-5","TOI-178"]
+    stars = ["TOI-6016", "Qatar-4", "Qatar-5", "WASP-93", "TOI-262"]
     csv_file = "age_fit_results_scipy.csv"
     fieldnames = ["starname","mass", "age_log10yr", "age_gyr", "feh", "distance_pc", "chi2", "dof", "red_chi2", "success", "message", "bands_used"]
     
