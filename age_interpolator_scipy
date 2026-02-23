@@ -4,10 +4,12 @@ import numpy as np
 from scipy.optimize import least_squares
 from isochrones import get_ichrone
 
-# Build once (cache it) so you don't reload grids every call.
+from csv_get_mags import read_star_row_from_csv
+
+# Cache MIST tracks (forward model)
 _TRACKS = get_ichrone("mist", tracks=True)
 
-BANDS = ["BP_mag", "G_mag", "RP_mag", "J_mag", "H_mag", "K_mag"]
+BANDS_ALL = ["BP_mag", "G_mag", "RP_mag", "J_mag", "H_mag", "K_mag"]
 
 
 def get_model_mag(
@@ -17,69 +19,89 @@ def get_model_mag(
     *,
     distance: float = 10.0,
     AV: float = 0.0,
+    bands: list[str] = BANDS_ALL,
 ) -> dict[str, float]:
     out = _TRACKS.generate(mass, age, feh, distance=distance, AV=AV, return_dict=True)
-    return {b: float(out[b]) for b in BANDS}
+    return {b: float(out[b]) for b in bands if b in out}
 
 
-def residuals(theta: np.ndarray,
-              mags_obs: np.ndarray,
-              mags_err: np.ndarray,
-              parallax_mas: float,
-              parallax_err_mas: float,
-              AV_fixed: float = 0.0) -> np.ndarray:
-    """
-    theta = [mass, age, feh, ln_distance]
-    returns residual vector = [(model-obs)/sigma for each mag] + [parallax residual]
-    """
+def _extract_obs_from_props(props: dict) -> tuple[list[str], np.ndarray, np.ndarray, float, float]:
+    if "parallax" not in props:
+        raise KeyError("props must include 'parallax' = (value_mas, sigma_mas)")
+
+    plx_val, plx_err = props["parallax"]
+    parallax_mas = float(plx_val)
+    parallax_err_mas = float(plx_err)
+
+    bands_used: list[str] = []
+    mags_obs: list[float] = []
+    mags_err: list[float] = []
+
+    for b in BANDS_ALL:
+        err_key = f"{b}_err"
+        if b in props and err_key in props:
+            bands_used.append(b)
+            mags_obs.append(float(props[b]))
+            mags_err.append(float(props[err_key]))
+
+    if len(bands_used) < 3:
+        raise ValueError(
+            f"Need at least 3 bands with errors. Found {bands_used}. "
+            f"Expected keys like 'G_mag' and 'G_mag_err'."
+        )
+
+    return bands_used, np.array(mags_obs), np.array(mags_err), parallax_mas, parallax_err_mas
+
+
+def residuals(
+    theta: np.ndarray,
+    *,
+    bands_used: list[str],
+    mags_obs: np.ndarray,
+    mags_err: np.ndarray,
+    parallax_mas: float,
+    parallax_err_mas: float,
+    AV_fixed: float = 0.0,
+) -> np.ndarray:
     mass, age, feh, ln_d = theta
     d = float(np.exp(ln_d))
 
-    # Hard guardrails
     if (d <= 0) or (not np.isfinite(d)):
-        return np.full(len(BANDS) + 1, 1e6)
+        return np.full(len(bands_used) + 1, 1e6)
 
     try:
-        m = get_model_mag(mass, age, feh, distance=d, AV=AV_fixed)
-        mags_model = np.array([m[b] for b in BANDS], dtype=float)
+        m = get_model_mag(mass, age, feh, distance=d, AV=AV_fixed, bands=bands_used)
+        if any(b not in m for b in bands_used):
+            return np.full(len(bands_used) + 1, 1e6)
+        mags_model = np.array([m[b] for b in bands_used], dtype=float)
     except Exception:
-        # generate() can fail / go out of bounds
-        return np.full(len(BANDS) + 1, 1e6)
+        return np.full(len(bands_used) + 1, 1e6)
 
     if not np.all(np.isfinite(mags_model)):
-        return np.full(len(BANDS) + 1, 1e6)
+        return np.full(len(bands_used) + 1, 1e6)
 
-    # photometric residuals
     r_phot = (mags_model - mags_obs) / mags_err
 
-    # parallax residual (model parallax = 1000/d)
     plx_model = 1000.0 / d
     r_plx = np.array([(plx_model - parallax_mas) / parallax_err_mas], dtype=float)
 
     return np.concatenate([r_phot, r_plx])
 
 
-def fit_mass_age_feh_from_bpg_rp(
+def fit_mass_age_feh_from_props(
+    props: dict,
     *,
-    BP: float, G: float, RP: float, J: float, H: float, K: float,
-    e_BP: float, e_G: float, e_RP: float, e_J: float, e_H: float, e_K: float,
-    parallax_mas: float,
-    parallax_err_mas: float,
     AV_fixed: float = 0.0,
+    mass_bounds: tuple[float, float] = (0.1, 5.0),
+    age_bounds: tuple[float, float] = (5.0, 10.2),  # log10(years)
+    feh_bounds: tuple[float, float] = (-2.0, 0.5),
+    max_nfev: int = 2000,
 ) -> dict[str, float]:
 
-    mags_obs = np.array([BP, G, RP, J, H, K], dtype=float)
-    mags_err = np.array([e_BP, e_G, e_RP, e_J, e_H, e_K], dtype=float)
+    bands_used, mags_obs, mags_err, parallax_mas, parallax_err_mas = _extract_obs_from_props(props)
 
-    # Initial guesses
     d0 = 1000.0 / parallax_mas
-    theta0 = np.array([1.0, 9.7, 0.0, np.log(d0)], dtype=float)  # mass, logAge, feh, ln(d)
-
-    # Bounds (tune as you like)
-    # mass in Msun, age in log10(years), feh in dex, distance in pc
-    mass_bounds = (0.1, 5.0)
-    age_bounds  = (5.0, 10.2)
-    feh_bounds  = (-2.0, 0.5)
+    theta0 = np.array([1.0, 9.7, 0.0, np.log(d0)], dtype=float)
 
     d_lo = max(0.1, 0.1 * d0)
     d_hi = 10.0 * d0
@@ -92,6 +114,7 @@ def fit_mass_age_feh_from_bpg_rp(
         theta0,
         bounds=(lb, ub),
         kwargs=dict(
+            bands_used=bands_used,
             mags_obs=mags_obs,
             mags_err=mags_err,
             parallax_mas=parallax_mas,
@@ -99,8 +122,8 @@ def fit_mass_age_feh_from_bpg_rp(
             AV_fixed=AV_fixed,
         ),
         method="trf",
-        loss="linear",     # pure chi^2
-        max_nfev=2000,
+        loss="linear",
+        max_nfev=max_nfev,
     )
 
     mass_fit, age_fit, feh_fit, ln_d_fit = res.x
@@ -111,38 +134,20 @@ def fit_mass_age_feh_from_bpg_rp(
 
     return {
         "mass": float(mass_fit),
-        "age": float(age_fit),
+        "age_log10yr": float(age_fit),
+        "age_gyr": float(10**age_fit / 1e9),
         "feh": float(feh_fit),
         "distance_pc": d_fit,
         "chi2": chi2,
         "dof": dof,
         "red_chi2": chi2 / dof if dof > 0 else np.nan,
         "success": bool(res.success),
-        "message": res.message,
+        "message": str(res.message),
+        "bands_used": bands_used,
     }
 
 
 if __name__ == "__main__":
-    # Example test (HD 209458)
-    fit = fit_mass_age_feh_from_bpg_rp(
-        BP=7.793283074,
-        G=7.521244378,
-        RP=7.080287415,
-        J =6.591,  
-        H =6.366,  
-        K =6.308, 
-        e_BP=0.0238641460537352,
-        e_G=0.0183144879635296, 
-        e_RP=0.0264984319384077, 
-        e_J=0.02, 
-        e_H=0.038, 
-        e_K=0.026,
-        parallax_mas=20.76938988528240,
-        parallax_err_mas=0.1,
-        AV_fixed=0.0,
-    )
-
-    fit["age_log10yr"] = fit.pop("age")
-    fit["age_gyr"] = 10**fit["age_log10yr"] / 1e9
-
+    props = read_star_row_from_csv("HD 209458", sigma_mag=True, sigma_parallax=0.1)
+    fit = fit_mass_age_feh_from_props(props, AV_fixed=0.0)
     print(fit)
