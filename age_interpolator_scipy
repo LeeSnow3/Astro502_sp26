@@ -93,9 +93,9 @@ def fit_mass_age_feh_from_props(
     props: dict,
     *,
     AV_fixed: float = 0.0,
-    mass_bounds: tuple[float, float] = (0.1, 5.0),
-    age_bounds: tuple[float, float] = (5.0, 10.2),  # log10(years)
-    feh_bounds: tuple[float, float] = (-2.0, 0.5),
+    mass_bounds: tuple[float, float] = (0.1, 50.0),
+    age_bounds: tuple[float, float] = (0.1, 10.2),  # log10(years)
+    feh_bounds: tuple[float, float] = (-2.0, 2.5),
     max_nfev: int = 2000,
 ) -> dict[str, float]:
 

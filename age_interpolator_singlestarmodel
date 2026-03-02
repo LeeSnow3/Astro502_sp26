@@ -4,7 +4,19 @@ from csv_get_mags import read_star_row_from_csv
 import pandas as pd
 import numpy as np
 import pprint
-import time
+import matplotlib.pyplot as plt
+from isochrones.priors import FlatLogPrior, LogNormalPrior
+from scipy.stats import gaussian_kde
+
+def kde_peak(samples: np.ndarray, n_grid: int = 2000) -> float:
+    """Return the mode of samples via Gaussian KDE in native units."""
+    kde  = gaussian_kde(samples, bw_method="scott")
+    grid = np.linspace(samples.min(), samples.max(), n_grid)
+    return float(grid[np.argmax(kde(grid))])
+
+def percentile_summary(samples: np.ndarray) -> tuple[float, float, float]:
+    """Return (16th, 50th, 84th) percentiles."""
+    return tuple(np.percentile(samples, [16, 50, 84]))
 
 def props_to_singlestarmodel_kwargs(props: dict) -> dict:
     """
@@ -35,28 +47,54 @@ def props_to_singlestarmodel_kwargs(props: dict) -> dict:
             out[k] = (float(props[k]), float(props[f"{k}_err"]))
 
     return out
-
+from scipy.optimize import curve_fit
 
 mist = get_ichrone("mist")
-stars = ["TOI-6016", "Qatar-4", "Qatar-5", "WASP-93", "TOI-262"]
+stars = ["TOI-6016", "WASP-96"]
 for host_name in stars:
     props = read_star_row_from_csv(
         host_name=host_name,
         sigma_mag=True,
         sigma_parallax=0.2, #not included in csv
     )
+    
+
     print(f"got props for {host_name}:")
     pprint.pprint(props)
     props = props_to_singlestarmodel_kwargs(props)
     mod = SingleStarModel(mist, name="csv_star", **props)
-
+    
+    
     # Run posterior sampling (nested sampling)
     mod.fit(verbose=False)
-
     samples = mod.samples
     samples["age_gyr"] = 10**samples["age"] / 1e9
     samples["Star"] = host_name
+
+    #fit the Chabrier IMF to the age samples and get the peak
+    log_age = samples["age"].values            # native: log10(yr)
+
+    log_peak          = kde_peak(log_age)
+    age_peak_gyr      = 10**log_peak / 1e9    # convert peak only
     
-    #write median results to csv
-    median_samples = samples.groupby("Star").median(numeric_only=True)
-    median_samples.to_csv("age_fit_results_singlestarmodel.csv", mode='a', header=not pd.io.common.file_exists("age_fit_results_singlestarmodel.csv"))
+    log_lo, log_med, log_hi = percentile_summary(log_age)
+    age_lo_gyr     = 10**log_lo  / 1e9
+    age_median_gyr = 10**log_med / 1e9
+    age_hi_gyr     = 10**log_hi  / 1e9
+    
+    #plot histogram w/ peak marked
+    plt.figure(figsize=(8, 5))
+    plt.hist(log_age, bins=30, density=True, alpha=0.6, color='g', label='Posterior')
+    plt.axvline(log_peak, color='r', linestyle='--', label=f'KDE Peak: {log_peak:.2f}')
+    plt.xlabel('Age (log10 Gyr)') 
+    plt.ylabel('Density')
+    plt.title(f'Age Distribution for {host_name}')
+    plt.legend()
+    plt.show()
+    
+    print(f"Samples for {host_name}:")
+    print(samples.describe())
+    #write mode results to csv
+    mode_samples = samples.groupby("Star").agg(lambda x: x.mode().iloc[0])
+    mode_samples.to_csv("age_fit_results_singlestarmodel.csv", mode='a', header=not pd.io.common.file_exists("age_fit_results_singlestarmodel.csv"))
+    

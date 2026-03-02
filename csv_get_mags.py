@@ -23,16 +23,25 @@ def read_star_row_from_csv(
     # --- Parallax (required) ---
     if not np.isnan(row["st_parallax_mas"]):
         props["parallax"] = (row["st_parallax_mas"], sigma_parallax)
+    
+    #Teff
+    if not np.isnan(row["st_teff"]):
+        props["Teff"] = row["st_teff"]
+        props["Teff_err"] = 100  # placeholder error (100 K)
 
+    #logg
+    if not np.isnan(row["st_logg"]):
+        props["logg"] = row["st_logg"]
+        props["logg_err"] = 0.1  # placeholder error (0.1 dex)
+   
     # band map from master_phot_csv to MIST keys
     band_map = {
         "gaiaGmag": "G_mag",
-        "giaaBPmag": "BP_mag",
+        "gaiaBPmag": "BP_mag",
         "gaiaRPmag": "RP_mag",
         "Jmag": "J_mag",
         "Hmag": "H_mag",
         "Kmag": "K_mag",
-        "vmag": "V_mag", 
     }
     #get photometry from phot_df
     for csv_col, iso_key in band_map.items():
