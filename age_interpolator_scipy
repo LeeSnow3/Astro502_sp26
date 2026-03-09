@@ -1,6 +1,8 @@
 from __future__ import annotations
+from pprint import pprint
 
 import numpy as np
+import pandas as pd
 from scipy.optimize import least_squares
 from isochrones import get_ichrone
 import csv
@@ -10,8 +12,54 @@ from csv_get_mags import read_star_row_from_csv
 # Cache MIST tracks (forward model)
 _TRACKS = get_ichrone("mist", tracks=True)
 
-BANDS_ALL = ["BP_mag", "G_mag", "RP_mag", "J_mag", "H_mag", "K_mag"]
+BANDS_ALL        = ["BP_mag", "G_mag", "RP_mag", "J_mag", "H_mag", "K_mag"]
+MASTER_CSV_PATH  = "mega_target_list.csv"
 
+
+# ── Observed-age reader ───────────────────────────────────────────────────────
+
+def get_observed_age_gyr(host_name: str) -> float | None:
+    """
+    Read the catalogued stellar age (Gyr) from mega_target_list.csv.
+    Returns None if the star is not found or the value is not finite.
+    Adjust the column name 'st_age' below if your CSV uses a different header.
+    """
+    try:
+        df  = pd.read_csv(MASTER_CSV_PATH)
+        row = df[df["hostname"] == host_name]
+        if row.empty:
+            print(f"  [Warning] '{host_name}' not found in {MASTER_CSV_PATH} for observed age.")
+            return None
+        val = row.iloc[0]["st_age"]   # <-- adjust column name if needed
+        val = float(val)
+        return val if np.isfinite(val) else None
+    except Exception as e:
+        print(f"  [Warning] Could not read observed age for '{host_name}': {e}")
+        return None
+
+def get_observed_stellar_params(host_name: str) -> dict[str, float | None]:
+    """
+    Read catalogued stellar parameters from mega_target_list.csv.
+    Returns dict with keys: age_gyr, mass, feh — values are None if missing/non-finite.
+    """
+    out: dict[str, float | None] = {"age_gyr": None, "mass": None, "feh": None}
+    try:
+        df  = pd.read_csv(MASTER_CSV_PATH)
+        row = df[df["hostname"] == host_name]
+        if row.empty:
+            print(f"  [Warning] '{host_name}' not found in {MASTER_CSV_PATH}")
+            return out
+        r = row.iloc[0]
+        for key, col in [("age_gyr", "st_age"), ("mass", "st_mass"), ("feh", "st_met")]:
+            try:
+                val    = float(r[col])
+                out[key] = val if np.isfinite(val) else None
+            except Exception:
+                out[key] = None
+    except Exception as e:
+        print(f"  [Warning] Could not read observed params for '{host_name}': {e}")
+    return out
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def get_model_mag(
     mass: float,
@@ -26,24 +74,74 @@ def get_model_mag(
     return {b: float(out[b]) for b in bands if b in out}
 
 
-def _extract_obs_from_props(props: dict) -> tuple[list[str], np.ndarray, np.ndarray, float, float]:
+def _get_optional_value_err(
+    props: dict, value_key: str, err_key: str
+) -> tuple[float | None, float | None]:
+    """Return (value, error) only if both are present, finite, and err > 0."""
+    if value_key not in props or err_key not in props:
+        return None, None
+    try:
+        val = float(props[value_key])
+        err = float(props[err_key])
+    except Exception:
+        return None, None
+    if (not np.isfinite(val)) or (not np.isfinite(err)) or (err <= 0):
+        return None, None
+    return val, err
+
+
+def _extract_obs_from_props(
+    props: dict,
+) -> tuple[
+    list[str],
+    np.ndarray,
+    np.ndarray,
+    float,
+    float,
+    float | None,
+    float | None,
+    float | None,
+    float | None,
+]:
+    """
+    Required in props:
+      - parallax = (value_mas, sigma_mas)
+      - >=3 photometric bands with errors (e.g., G_mag and G_mag_err)
+
+    Optional constraints:
+      - teff, teff_err
+      - feh, feh_err
+    """
     if "parallax" not in props:
         raise KeyError("props must include 'parallax' = (value_mas, sigma_mas)")
 
     plx_val, plx_err = props["parallax"]
-    parallax_mas = float(plx_val)
+    parallax_mas     = float(plx_val)
     parallax_err_mas = float(plx_err)
 
+    if (
+        (not np.isfinite(parallax_mas))
+        or (not np.isfinite(parallax_err_mas))
+        or (parallax_err_mas <= 0)
+    ):
+        raise ValueError("parallax and parallax error must be finite, and parallax_err > 0")
+
     bands_used: list[str] = []
-    mags_obs: list[float] = []
-    mags_err: list[float] = []
+    mags_obs:   list[float] = []
+    mags_err:   list[float] = []
 
     for b in BANDS_ALL:
         err_key = f"{b}_err"
         if b in props and err_key in props:
-            bands_used.append(b)
-            mags_obs.append(float(props[b]))
-            mags_err.append(float(props[err_key]))
+            try:
+                mag_val = float(props[b])
+                mag_err = float(props[err_key])
+            except Exception:
+                continue
+            if np.isfinite(mag_val) and np.isfinite(mag_err) and (mag_err > 0):
+                bands_used.append(b)
+                mags_obs.append(mag_val)
+                mags_err.append(mag_err)
 
     if len(bands_used) < 3:
         raise ValueError(
@@ -51,8 +149,40 @@ def _extract_obs_from_props(props: dict) -> tuple[list[str], np.ndarray, np.ndar
             f"Expected keys like 'G_mag' and 'G_mag_err'."
         )
 
-    return bands_used, np.array(mags_obs), np.array(mags_err), parallax_mas, parallax_err_mas
+    teff_obs, teff_err = _get_optional_value_err(props, "teff", "teff_err")
+    feh_obs,  feh_err  = _get_optional_value_err(props, "feh",  "feh_err")
 
+    return (
+        bands_used,
+        np.array(mags_obs, dtype=float),
+        np.array(mags_err, dtype=float),
+        parallax_mas,
+        parallax_err_mas,
+        teff_obs,
+        teff_err,
+        feh_obs,
+        feh_err,
+    )
+
+
+def _extract_model_teff(model_out: dict) -> float:
+    """Try common key names for effective temperature in isochrones/MIST output."""
+    for k in ("Teff", "teff", "T_eff", "effective_temperature"):
+        if k in model_out:
+            val = float(model_out[k])
+            if np.isfinite(val):
+                return val
+    raise KeyError(
+        f"Could not find Teff in model output. Example keys: {list(model_out.keys())[:20]}"
+    )
+
+
+def _penalty_vector(bands_used_len: int, use_teff: bool, use_feh: bool) -> np.ndarray:
+    n_extra = 1 + int(use_teff) + int(use_feh)
+    return np.full(bands_used_len + n_extra, 1e6, dtype=float)
+
+
+# ── Residual function ─────────────────────────────────────────────────────────
 
 def residuals(
     theta: np.ndarray,
@@ -62,53 +192,104 @@ def residuals(
     mags_err: np.ndarray,
     parallax_mas: float,
     parallax_err_mas: float,
-    AV_fixed: float = 0.0,
+    teff_obs: float | None = None,
+    teff_err: float | None = None,
+    feh_obs:  float | None = None,
+    feh_err:  float | None = None,
 ) -> np.ndarray:
-    mass, age, feh, ln_d = theta
+    # theta = [mass, age_log10yr, feh, ln_d, AV]
+    mass, age, feh, ln_d, AV = theta
     d = float(np.exp(ln_d))
 
-    if (d <= 0) or (not np.isfinite(d)):
-        return np.full(len(bands_used) + 1, 1e6)
+    use_teff = teff_obs is not None and teff_err is not None
+    use_feh  = feh_obs  is not None and feh_err  is not None
+
+    if (d <= 0) or (not np.isfinite(d)) or (not np.isfinite(AV)) or (AV < 0):
+        return _penalty_vector(len(bands_used), use_teff, use_feh)
 
     try:
-        m = get_model_mag(mass, age, feh, distance=d, AV=AV_fixed, bands=bands_used)
-        if any(b not in m for b in bands_used):
-            return np.full(len(bands_used) + 1, 1e6)
-        mags_model = np.array([m[b] for b in bands_used], dtype=float)
+        model_out = _TRACKS.generate(
+            mass, age, feh, distance=d, AV=float(AV), return_dict=True
+        )
+        if any(b not in model_out for b in bands_used):
+            return _penalty_vector(len(bands_used), use_teff, use_feh)
+        mags_model = np.array([float(model_out[b]) for b in bands_used], dtype=float)
     except Exception:
-        return np.full(len(bands_used) + 1, 1e6)
+        return _penalty_vector(len(bands_used), use_teff, use_feh)
 
     if not np.all(np.isfinite(mags_model)):
-        return np.full(len(bands_used) + 1, 1e6)
+        return _penalty_vector(len(bands_used), use_teff, use_feh)
 
+    # Photometric residuals
     r_phot = (mags_model - mags_obs) / mags_err
 
+    # Parallax residual
     plx_model = 1000.0 / d
-    r_plx = np.array([(plx_model - parallax_mas) / parallax_err_mas], dtype=float)
+    r_plx     = (plx_model - parallax_mas) / parallax_err_mas
 
-    return np.concatenate([r_phot, r_plx])
+    resid_parts: list[np.ndarray] = [r_phot, np.array([r_plx], dtype=float)]
 
+    if use_teff:
+        try:
+            teff_model = _extract_model_teff(model_out)
+            r_teff     = (teff_model - teff_obs) / teff_err
+            resid_parts.append(np.array([r_teff], dtype=float))
+        except Exception:
+            resid_parts.append(np.array([1e6], dtype=float))
+
+    if use_feh:
+        r_feh = (feh - feh_obs) / feh_err
+        resid_parts.append(np.array([r_feh], dtype=float))
+
+    return np.concatenate(resid_parts)
+
+
+# ── Main fitter ───────────────────────────────────────────────────────────────
 
 def fit_mass_age_feh_from_props(
     props: dict,
     *,
-    AV_fixed: float = 0.0,
     mass_bounds: tuple[float, float] = (0.1, 50.0),
-    age_bounds: tuple[float, float] = (0.1, 10.2),  # log10(years)
-    feh_bounds: tuple[float, float] = (-2.0, 2.5),
-    max_nfev: int = 2000,
-) -> dict[str, float]:
-
-    bands_used, mags_obs, mags_err, parallax_mas, parallax_err_mas = _extract_obs_from_props(props)
+    age_bounds:  tuple[float, float] = (7.0, 10.14),   #log10(age/yr) from 10 Myr to 13.8 Gyr
+    feh_bounds:  tuple[float, float] = (-2.0, 2.5),
+    AV_bounds:   tuple[float, float] = (0.0, 5.0),
+    max_nfev:    int = 4000,
+) -> dict:
+    (
+        bands_used,
+        mags_obs,
+        mags_err,
+        parallax_mas,
+        parallax_err_mas,
+        teff_obs,
+        teff_err,
+        feh_obs,
+        feh_err,
+    ) = _extract_obs_from_props(props)
 
     d0 = 1000.0 / parallax_mas
-    theta0 = np.array([1.0, 9.7, 0.0, np.log(d0)], dtype=float)
+    if (not np.isfinite(d0)) or (d0 <= 0):
+        raise ValueError(f"Invalid parallax for initializing distance: parallax_mas={parallax_mas}")
+
+    feh0 = 0.0
+    if feh_obs is not None:
+        feh0 = float(np.clip(feh_obs, feh_bounds[0], feh_bounds[1]))
+
+    AV0    = float(np.clip(0.05, AV_bounds[0], AV_bounds[1]))
+    theta0 = np.array([1.0, 8.6, feh0, np.log(d0), AV0], dtype=float)
+    print(f"  Initial distance from parallax: {d0:.2f} pc")
 
     d_lo = max(0.1, 0.1 * d0)
     d_hi = 10.0 * d0
 
-    lb = np.array([mass_bounds[0], age_bounds[0], feh_bounds[0], np.log(d_lo)], dtype=float)
-    ub = np.array([mass_bounds[1], age_bounds[1], feh_bounds[1], np.log(d_hi)], dtype=float)
+    lb = np.array(
+        [mass_bounds[0], age_bounds[0], feh_bounds[0], np.log(d_lo), AV_bounds[0]],
+        dtype=float,
+    )
+    ub = np.array(
+        [mass_bounds[1], age_bounds[1], feh_bounds[1], np.log(d_hi), AV_bounds[1]],
+        dtype=float,
+    )
 
     res = least_squares(
         residuals,
@@ -120,49 +301,240 @@ def fit_mass_age_feh_from_props(
             mags_err=mags_err,
             parallax_mas=parallax_mas,
             parallax_err_mas=parallax_err_mas,
-            AV_fixed=AV_fixed,
+            teff_obs=teff_obs,
+            teff_err=teff_err,
+            feh_obs=feh_obs,
+            feh_err=feh_err,
         ),
         method="trf",
         loss="linear",
         max_nfev=max_nfev,
     )
 
-    mass_fit, age_fit, feh_fit, ln_d_fit = res.x
+    mass_fit, age_fit, feh_fit, ln_d_fit, AV_fit = res.x
     d_fit = float(np.exp(ln_d_fit))
 
+    # ── Best-fit model magnitudes ─────────────────────────────────────────────
+    try:
+        best_fit_model_out = _TRACKS.generate(
+            mass_fit, age_fit, feh_fit,
+            distance=d_fit, AV=float(AV_fit),
+            return_dict=True,
+        )
+        model_mags: dict[str, float] = {}
+        obs_mags:   dict[str, float] = {}
+        mag_resids: dict[str, float] = {}
+
+        for b, obs, err in zip(bands_used, mags_obs, mags_err):
+            model_val              = float(best_fit_model_out[b]) if b in best_fit_model_out else np.nan
+            model_mags[f"{b}_model"] = model_val
+            obs_mags[f"{b}_obs"]     = float(obs)
+            mag_resids[f"{b}_resid"] = float(model_val - obs)   # model - observed
+
+    except Exception as e:
+        model_mags = {f"{b}_model": np.nan for b in bands_used}
+        obs_mags   = {f"{b}_obs":   np.nan for b in bands_used}
+        mag_resids = {f"{b}_resid": np.nan for b in bands_used}
+        print(f"  [Warning] Could not evaluate model at best-fit point: {e}")
+
     chi2 = float(np.sum(res.fun**2))
-    dof = int(len(res.fun) - len(res.x))
+    dof  = int(len(res.fun) - len(res.x))
 
     return {
-        "mass": float(mass_fit),
+        "mass":        float(mass_fit),
         "age_log10yr": float(age_fit),
-        "age_gyr": float(10**age_fit / 1e9),
-        "feh": float(feh_fit),
+        "age_gyr":     float(10**age_fit / 1e9),
+        # age_observed and age_resid are added in __main__ after catalogue lookup
+        "feh":         float(feh_fit),
+        "AV":          float(AV_fit),
         "distance_pc": d_fit,
-        "chi2": chi2,
-        "dof": dof,
-        "red_chi2": chi2 / dof if dof > 0 else np.nan,
-        "success": bool(res.success),
-        "message": str(res.message),
-        "bands_used": bands_used,
+        "chi2":        chi2,
+        "dof":         dof,
+        "red_chi2":    chi2 / dof if dof > 0 else np.nan,
+        "success":     bool(res.success),
+        "message":     str(res.message),
+        "bands_used":  bands_used,
+        "used_teff_constraint": bool(teff_obs is not None and teff_err is not None),
+        "used_feh_constraint":  bool(feh_obs  is not None and feh_err  is not None),
+        # ── Per-band photometry ───────────────────────────────────────────────
+        **obs_mags,     # BP_mag_obs,   G_mag_obs,   ...
+        **model_mags,   # BP_mag_model, G_mag_model, ...
+        **mag_resids,   # BP_mag_resid, G_mag_resid, ...
     }
 
 
+# ── Entry point ───────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    stars = ["TOI-6016", "Qatar-4", "Qatar-5", "WASP-93", "TOI-262"]
+    stars = [
+        "TOI-6016", "Qatar-5", "WASP-93", "TOI-2046", "TOI-1224"
+    ]
+
     csv_file = "age_fit_results_scipy.csv"
-    fieldnames = ["starname","mass", "age_log10yr", "age_gyr", "feh", "distance_pc", "chi2", "dof", "red_chi2", "success", "message", "bands_used"]
-    
-    with open(csv_file, mode='w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+    base_fieldnames = [
+        "starname",
+        "mass",
+        "mass_observed",      # st_mass from catalogue
+        "mass_resid",         # mass (model) - mass_observed
+        "age_log10yr",
+        "age_gyr",
+        "age_observed",       # st_age from catalogue (Gyr)
+        "age_resid",          # age_gyr (model) - age_observed
+        "feh",
+        "feh_observed",       # st_met from catalogue
+        "feh_resid",          # feh (model) - feh_observed
+        "AV",
+        "distance_pc",
+        "chi2",
+        "dof",
+        "red_chi2",
+        "success",
+        "message",
+        "bands_used",
+        "used_teff_constraint",
+        "used_feh_constraint",
+    ]
+
+    band_fieldnames: list[str] = []
+    for b in BANDS_ALL:
+        band_fieldnames += [f"{b}_obs", f"{b}_model", f"{b}_resid"]
+
+    fieldnames = base_fieldnames + band_fieldnames
+
+    with open(csv_file, mode="w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-    
+
+    all_residuals: list[dict] = []
+
     for star in stars:
-        props = read_star_row_from_csv(star, sigma_mag=True, sigma_parallax=0.1)
-        with open(csv_file, mode='a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            fit = fit_mass_age_feh_from_props(props, AV_fixed=0.0)
+        print(f"\n{'='*55}\nFitting {star}")
+        try:
+            props      = read_star_row_from_csv(star, sigma_mag=True, sigma_parallax=0.1)
+            fit        = fit_mass_age_feh_from_props(props)
             fit["starname"] = star
+
+            # ── Attach observed parameters and residuals ──────────────────────
+            obs_params = get_observed_stellar_params(star)
+
+            # Age
+            age_obs              = obs_params["age_gyr"]
+            fit["age_observed"]  = age_obs if age_obs is not None else np.nan
+            fit["age_resid"]     = float(fit["age_gyr"] - age_obs) if age_obs is not None else np.nan
+
+            # Mass
+            mass_obs             = obs_params["mass"]
+            fit["mass_observed"] = mass_obs if mass_obs is not None else np.nan
+            fit["mass_resid"]    = float(fit["mass"] - mass_obs) if mass_obs is not None else np.nan
+
+            # [Fe/H]
+            feh_obs              = obs_params["feh"]
+            fit["feh_observed"]  = feh_obs if feh_obs is not None else np.nan
+            fit["feh_resid"]     = float(fit["feh"] - feh_obs) if feh_obs is not None else np.nan
+
+            # ── Pretty-print photometry comparison ───────────────────────────
+            print(f"  {'Band':<12} {'Observed':>10} {'Model':>10} {'Residual':>10}")
+            print(f"  {'-'*44}")
+            for b in fit["bands_used"]:
+                obs   = fit.get(f"{b}_obs",   np.nan)
+                mod   = fit.get(f"{b}_model", np.nan)
+                resid = fit.get(f"{b}_resid", np.nan)
+                print(f"  {b:<12} {obs:>10.4f} {mod:>10.4f} {resid:>+10.4f}")
+
+            # ── Pretty-print stellar parameter comparison ─────────────────────
+            def _fmt(val: float) -> str:
+                return f"{val:.3f}" if np.isfinite(val) else "N/A"
+
+            def _fmt_signed(val: float) -> str:
+                return f"{val:+.3f}" if np.isfinite(val) else "N/A"
+
+            print(f"\n  {'Parameter':<14} {'Model':>10} {'Observed':>10} {'Residual':>10}")
+            print(f"  {'-'*46}")
+            print(f"  {'Age (Gyr)':<14} "
+                  f"{_fmt(fit['age_gyr']):>10} "
+                  f"{_fmt(fit['age_observed']):>10} "
+                  f"{_fmt_signed(fit['age_resid']):>10}")
+            print(f"  {'Mass (Msun)':<14} "
+                  f"{_fmt(fit['mass']):>10} "
+                  f"{_fmt(fit['mass_observed']):>10} "
+                  f"{_fmt_signed(fit['mass_resid']):>10}")
+            print(f"  {'[Fe/H]':<14} "
+                  f"{_fmt(fit['feh']):>10} "
+                  f"{_fmt(fit['feh_observed']):>10} "
+                  f"{_fmt_signed(fit['feh_resid']):>10}")
+            print(f"\n  AV: {fit['AV']:.3f}  |  red_chi2: {fit['red_chi2']:.2f}")
+
+            # ── Collect for summary ───────────────────────────────────────────
+            resid_row: dict = {
+                "starname":  star,
+                "age_resid":  fit["age_resid"],
+                "mass_resid": fit["mass_resid"],
+                "feh_resid":  fit["feh_resid"],
+            }
+            for b in BANDS_ALL:
+                resid_row[f"{b}_resid"] = fit.get(f"{b}_resid", np.nan)
+            all_residuals.append(resid_row)
+
+        except Exception as e:
+            print(f"  [Error] {star}: {e}")
+            fit = {"starname": star, "message": str(e)}
+
+        with open(csv_file, mode="a", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=fieldnames,
+                extrasaction="ignore",
+                restval=np.nan,
+            )
             writer.writerow(fit)
+
+    print(f"\nResults written to {csv_file}")
+
+    # ── Summary table ─────────────────────────────────────────────────────────
+    if all_residuals:
+        resid_df = pd.DataFrame(all_residuals).set_index("starname")
+
+        # Stellar params first, then bands
+        col_order = (
+            ["age_resid", "mass_resid", "feh_resid"]
+            + [f"{b}_resid" for b in BANDS_ALL]
+        )
+        col_order = [
+            c for c in col_order
+            if c in resid_df.columns and resid_df[c].notna().any()
+        ]
+
+        mean_resid = resid_df[col_order].mean()
+        mae_resid  = resid_df[col_order].abs().mean()
+        std_resid  = resid_df[col_order].std()
+        n_valid    = resid_df[col_order].notna().sum()
+
+        label_map = {
+            "age_resid":  "Age (Gyr)",
+            "mass_resid": "Mass (Msun)",
+            "feh_resid":  "[Fe/H]",
+        }
+        for b in BANDS_ALL:
+            label_map[f"{b}_resid"] = b.replace("_mag", "")
+
+        print(f"\n{'='*65}")
+        print("RESIDUAL SUMMARY  (model − observed)")
+        print(f"{'='*65}")
+        print(
+            f"  {'Parameter':<14} {'Mean':>10} {'MAE':>10} "
+            f"{'Std Dev':>10} {'N':>5}"
+        )
+        print(f"  {'-'*51}")
+        for col in col_order:
+            label = label_map.get(col, col)
+            print(
+                f"  {label:<14} "
+                f"{mean_resid[col]:>+10.4f} "
+                f"{mae_resid[col]:>10.4f} "
+                f"{std_resid[col]:>10.4f} "
+                f"{int(n_valid[col]):>5}"
+            )
+        print(f"{'='*65}\n")
+
         
 

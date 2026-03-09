@@ -174,7 +174,7 @@ def plot_posteriors(samples: pd.DataFrame, host_name: str) -> None:
         ax.legend(fontsize=8)
 
     plt.tight_layout()
-    plt.show()
+    plt.savefig(f"posteriors_{host_name}.png")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

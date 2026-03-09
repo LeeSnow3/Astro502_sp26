@@ -29,10 +29,10 @@ def read_star_row_from_csv(
         props["Teff"] = row["st_teff"]
         props["Teff_err"] = 100  # placeholder error (100 K)
 
-    #logg
-    if not np.isnan(row["st_logg"]):
-        props["logg"] = row["st_logg"]
-        props["logg_err"] = 0.1  # placeholder error (0.1 dex)
+    #feh
+    if not np.isnan(row["st_met"]):
+        props["feh"] = row["st_met"]
+        props["feh_err"] = 0.1  # placeholder error (0.1 dex)
    
     # band map from master_phot_csv to MIST keys
     band_map = {

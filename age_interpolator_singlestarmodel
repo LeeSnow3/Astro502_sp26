@@ -60,8 +60,9 @@ for host_name in stars:
     
 
     print(f"got props for {host_name}:")
-    pprint.pprint(props)
+
     props = props_to_singlestarmodel_kwargs(props)
+    pprint.pprint(props)
     mod = SingleStarModel(mist, name="csv_star", **props)
     
     
@@ -70,10 +71,9 @@ for host_name in stars:
     samples = mod.samples
     samples["age_gyr"] = 10**samples["age"] / 1e9
     samples["Star"] = host_name
-
-    #fit the Chabrier IMF to the age samples and get the peak
+    
     log_age = samples["age"].values            # native: log10(yr)
-
+    age_gyr = samples["age_gyr"].values
     log_peak          = kde_peak(log_age)
     age_peak_gyr      = 10**log_peak / 1e9    # convert peak only
     
@@ -84,13 +84,13 @@ for host_name in stars:
     
     #plot histogram w/ peak marked
     plt.figure(figsize=(8, 5))
-    plt.hist(log_age, bins=30, density=True, alpha=0.6, color='g', label='Posterior')
-    plt.axvline(log_peak, color='r', linestyle='--', label=f'KDE Peak: {log_peak:.2f}')
-    plt.xlabel('Age (log10 Gyr)') 
+    plt.hist(age_gyr, bins=30, density=True, alpha=0.6, color='g')
+    plt.axvline(age_peak_gyr, color='r', linestyle='--', label=f'KDE Peak: {age_peak_gyr:.2f} Gyr')
+    plt.xlabel('Age (Gyr)') 
     plt.ylabel('Density')
     plt.title(f'Age Distribution for {host_name}')
     plt.legend()
-    plt.show()
+    plt.savefig(f"age_dist_{host_name}.png")
     
     print(f"Samples for {host_name}:")
     print(samples.describe())
