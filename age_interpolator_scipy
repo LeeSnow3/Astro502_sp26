@@ -149,7 +149,7 @@ def _extract_obs_from_props(
             f"Expected keys like 'G_mag' and 'G_mag_err'."
         )
 
-    teff_obs, teff_err = _get_optional_value_err(props, "teff", "teff_err")
+    teff_obs, teff_err = _get_optional_value_err(props, "Teff", "Teff_err")
     feh_obs,  feh_err  = _get_optional_value_err(props, "feh",  "feh_err")
 
     return (
@@ -200,8 +200,7 @@ def residuals(
     # theta = [mass, age_log10yr, feh, ln_d, AV]
     mass, age, feh, ln_d, AV = theta
     d = float(np.exp(ln_d))
-
-    use_teff = teff_obs is not None and teff_err is not None
+    use_teff = False  #teff_obs is not None and teff_err is not None
     use_feh  = feh_obs  is not None and feh_err  is not None
 
     if (d <= 0) or (not np.isfinite(d)) or (not np.isfinite(AV)) or (AV < 0):

@@ -27,7 +27,7 @@ def read_star_row_from_csv(
     #Teff
     if not np.isnan(row["st_teff"]):
         props["Teff"] = row["st_teff"]
-        props["Teff_err"] = 100  # placeholder error (100 K)
+        props["Teff_err"] = 100  
 
     #feh
     if not np.isnan(row["st_met"]):
