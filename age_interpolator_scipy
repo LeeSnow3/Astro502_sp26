@@ -22,7 +22,6 @@ def get_observed_age_gyr(host_name: str) -> float | None:
     """
     Read the catalogued stellar age (Gyr) from mega_target_list.csv.
     Returns None if the star is not found or the value is not finite.
-    Adjust the column name 'st_age' below if your CSV uses a different header.
     """
     try:
         df  = pd.read_csv(MASTER_CSV_PATH)
@@ -30,12 +29,13 @@ def get_observed_age_gyr(host_name: str) -> float | None:
         if row.empty:
             print(f"  [Warning] '{host_name}' not found in {MASTER_CSV_PATH} for observed age.")
             return None
-        val = row.iloc[0]["st_age"]   # <-- adjust column name if needed
+        val = row.iloc[0]["st_age"]
         val = float(val)
         return val if np.isfinite(val) else None
     except Exception as e:
         print(f"  [Warning] Could not read observed age for '{host_name}': {e}")
         return None
+
 
 def get_observed_stellar_params(host_name: str) -> dict[str, float | None]:
     """
@@ -52,13 +52,15 @@ def get_observed_stellar_params(host_name: str) -> dict[str, float | None]:
         r = row.iloc[0]
         for key, col in [("age_gyr", "st_age"), ("mass", "st_mass"), ("feh", "st_met")]:
             try:
-                val    = float(r[col])
+                val      = float(r[col])
                 out[key] = val if np.isfinite(val) else None
             except Exception:
                 out[key] = None
     except Exception as e:
         print(f"  [Warning] Could not read observed params for '{host_name}': {e}")
     return out
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def get_model_mag(
@@ -98,6 +100,8 @@ def _extract_obs_from_props(
     np.ndarray,
     float,
     float,
+    float | None,
+    float | None,
     float | None,
     float | None,
     float | None,
@@ -149,8 +153,9 @@ def _extract_obs_from_props(
             f"Expected keys like 'G_mag' and 'G_mag_err'."
         )
 
-    teff_obs, teff_err = _get_optional_value_err(props, "Teff", "Teff_err")
-    feh_obs,  feh_err  = _get_optional_value_err(props, "feh",  "feh_err")
+    teff_obs, teff_err = _get_optional_value_err(props, "Teff",    "Teff_err")
+    feh_obs,  feh_err  = _get_optional_value_err(props, "feh",     "feh_err")
+    age_obs,  age_err  = _get_optional_value_err(props, "age_gyr", "age_gyr_err")
 
     return (
         bands_used,
@@ -162,6 +167,8 @@ def _extract_obs_from_props(
         teff_err,
         feh_obs,
         feh_err,
+        age_obs,
+        age_err,
     )
 
 
@@ -196,12 +203,13 @@ def residuals(
     teff_err: float | None = None,
     feh_obs:  float | None = None,
     feh_err:  float | None = None,
+    age_err:  float | None = None,
 ) -> np.ndarray:
     # theta = [mass, age_log10yr, feh, ln_d, AV]
     mass, age, feh, ln_d, AV = theta
     d = float(np.exp(ln_d))
-    use_teff = False  #teff_obs is not None and teff_err is not None
-    use_feh  = feh_obs  is not None and feh_err  is not None
+    use_teff = False  # teff_obs is not None and teff_err is not None
+    use_feh  = feh_obs is not None and feh_err is not None
 
     if (d <= 0) or (not np.isfinite(d)) or (not np.isfinite(AV)) or (AV < 0):
         return _penalty_vector(len(bands_used), use_teff, use_feh)
@@ -243,16 +251,128 @@ def residuals(
     return np.concatenate(resid_parts)
 
 
+# ── Monte Carlo error estimation ──────────────────────────────────────────────
+
+def _monte_carlo_errors(
+    props: dict,
+    *,
+    best_fit_result: dict,
+    n_samples: int = 200,
+    mass_bounds: tuple[float, float] = (0.1, 50.0),
+    age_bounds:  tuple[float, float] = (7.0, 10.14),
+    feh_bounds:  tuple[float, float] = (-2.0, 2.5),
+    AV_bounds:   tuple[float, float] = (0.0, 5.0),
+    max_nfev:    int = 2000,
+    seed:        int = 42,
+) -> dict[str, float]:
+    """
+    Monte Carlo uncertainty estimation by resampling observables.
+
+    For each of ``n_samples`` draws:
+      * Every observed magnitude is perturbed by N(0, σ_mag).
+      * The parallax is perturbed by N(0, σ_parallax).
+      * Optional feh prior is perturbed by its reported error.
+      * The least-squares fit is re-run warm-started from the best-fit point.
+
+    Returns
+    -------
+    dict with keys ``mass_mc_err``, ``age_log10yr_mc_err``,
+    ``age_gyr_mc_err``, ``feh_mc_err``, ``AV_mc_err``,
+    ``distance_pc_mc_err``.
+    Values are NaN when fewer than 5 samples converged.
+    """
+    (
+        bands_used, mags_obs, mags_err,
+        parallax_mas, parallax_err_mas,
+        teff_obs, teff_err, feh_obs, feh_err, age_obs, age_err,
+    ) = _extract_obs_from_props(props)
+
+    rng = np.random.default_rng(seed)
+
+    d0 = best_fit_result["distance_pc"]
+    best_theta = np.array([
+        best_fit_result["mass"],
+        best_fit_result["age_log10yr"],
+        best_fit_result["feh"],
+        np.log(d0),
+        best_fit_result["AV"],
+    ], dtype=float)
+
+    d_lo = max(0.1, 0.1 * d0)
+    d_hi = 10.0 * d0
+    lb = np.array([mass_bounds[0], age_bounds[0], feh_bounds[0], np.log(d_lo), AV_bounds[0]])
+    ub = np.array([mass_bounds[1], age_bounds[1], feh_bounds[1], np.log(d_hi), AV_bounds[1]])
+
+    samples: dict[str, list[float]] = {
+        k: [] for k in ("mass", "age_log10yr", "age_gyr", "feh", "AV", "distance_pc")
+    }
+    n_success = 0
+
+    for _ in range(n_samples):
+        mags_p = mags_obs + rng.standard_normal(len(mags_obs)) * mags_err
+        plx_p  = parallax_mas + rng.standard_normal() * parallax_err_mas
+        if plx_p <= 0:
+            continue
+
+        feh_obs_p = feh_obs
+        if feh_obs is not None and feh_err is not None:
+            feh_obs_p = float(feh_obs + rng.standard_normal() * feh_err)
+
+        try:
+            res_mc = least_squares(
+                residuals,
+                best_theta,
+                bounds=(lb, ub),
+                kwargs=dict(
+                    bands_used=bands_used,
+                    mags_obs=mags_p,
+                    mags_err=mags_err,
+                    parallax_mas=plx_p,
+                    parallax_err_mas=parallax_err_mas,
+                    teff_obs=teff_obs,
+                    teff_err=teff_err,
+                    feh_obs=feh_obs_p,
+                    feh_err=feh_err,
+                    age_err=age_err,
+                ),
+                method="trf",
+                loss="linear",
+                max_nfev=max_nfev,
+            )
+        except Exception:
+            continue
+
+        if not (res_mc.success or float(np.sum(res_mc.fun ** 2)) < 1e3):
+            continue
+
+        m, a, fe, lnd, av = res_mc.x
+        samples["mass"].append(float(m))
+        samples["age_log10yr"].append(float(a))
+        samples["age_gyr"].append(float(10 ** a / 1e9))
+        samples["feh"].append(float(fe))
+        samples["AV"].append(float(av))
+        samples["distance_pc"].append(float(np.exp(lnd)))
+        n_success += 1
+
+    print(f"  [MC] {n_success}/{n_samples} samples converged.")
+
+    return {
+        f"{key}_mc_err": float(np.std(vals, ddof=1)) if len(vals) >= 5 else np.nan
+        for key, vals in samples.items()
+    }
+
+
 # ── Main fitter ───────────────────────────────────────────────────────────────
 
 def fit_mass_age_feh_from_props(
     props: dict,
     *,
-    mass_bounds: tuple[float, float] = (0.1, 50.0),
-    age_bounds:  tuple[float, float] = (7.0, 10.14),   #log10(age/yr) from 10 Myr to 13.8 Gyr
-    feh_bounds:  tuple[float, float] = (-2.0, 2.5),
-    AV_bounds:   tuple[float, float] = (0.0, 5.0),
-    max_nfev:    int = 4000,
+    mass_bounds:  tuple[float, float] = (0.1, 50.0),
+    age_bounds:   tuple[float, float] = (7.0, 10.14),   # log10(age/yr): 10 Myr – 13.8 Gyr
+    feh_bounds:   tuple[float, float] = (-2.0, 2.5),
+    AV_bounds:    tuple[float, float] = (0.0, 5.0),
+    max_nfev:     int = 4000,
+    n_mc_samples: int = 0,   # 0 → skip MC; e.g. 200 to enable
 ) -> dict:
     (
         bands_used,
@@ -264,6 +384,8 @@ def fit_mass_age_feh_from_props(
         teff_err,
         feh_obs,
         feh_err,
+        age_obs,
+        age_err,
     ) = _extract_obs_from_props(props)
 
     d0 = 1000.0 / parallax_mas
@@ -274,8 +396,14 @@ def fit_mass_age_feh_from_props(
     if feh_obs is not None:
         feh0 = float(np.clip(feh_obs, feh_bounds[0], feh_bounds[1]))
 
+    age0 = 9.7
+    if age_obs is not None:
+        age_log10yr = np.log10(age_obs * 1e9)
+        age0 = float(np.clip(age_log10yr, age_bounds[0], age_bounds[1]))
+
     AV0    = float(np.clip(0.05, AV_bounds[0], AV_bounds[1]))
-    theta0 = np.array([1.0, 8.6, feh0, np.log(d0), AV0], dtype=float)
+    theta0 = np.array([1.0, age0, feh0, np.log(d0), AV0], dtype=float)
+    print(f"initial theta: {theta0}")
     print(f"  Initial distance from parallax: {d0:.2f} pc")
 
     d_lo = max(0.1, 0.1 * d0)
@@ -304,14 +432,20 @@ def fit_mass_age_feh_from_props(
             teff_err=teff_err,
             feh_obs=feh_obs,
             feh_err=feh_err,
+            age_err=age_err,
         ),
         method="trf",
         loss="linear",
         max_nfev=max_nfev,
     )
-
+    print("in fit_mass_age_feh_from_props:")
     mass_fit, age_fit, feh_fit, ln_d_fit, AV_fit = res.x
+    print(res.x)
+    print(res.fun)
     d_fit = float(np.exp(ln_d_fit))
+
+    chi2 = float(np.sum(res.fun ** 2))
+    dof  = int(len(res.fun) - len(res.x))
 
     # ── Best-fit model magnitudes ─────────────────────────────────────────────
     try:
@@ -325,7 +459,7 @@ def fit_mass_age_feh_from_props(
         mag_resids: dict[str, float] = {}
 
         for b, obs, err in zip(bands_used, mags_obs, mags_err):
-            model_val              = float(best_fit_model_out[b]) if b in best_fit_model_out else np.nan
+            model_val                = float(best_fit_model_out[b]) if b in best_fit_model_out else np.nan
             model_mags[f"{b}_model"] = model_val
             obs_mags[f"{b}_obs"]     = float(obs)
             mag_resids[f"{b}_resid"] = float(model_val - obs)   # model - observed
@@ -336,63 +470,92 @@ def fit_mass_age_feh_from_props(
         mag_resids = {f"{b}_resid": np.nan for b in bands_used}
         print(f"  [Warning] Could not evaluate model at best-fit point: {e}")
 
-    chi2 = float(np.sum(res.fun**2))
-    dof  = int(len(res.fun) - len(res.x))
-
-    return {
-        "mass":        float(mass_fit),
-        "age_log10yr": float(age_fit),
-        "age_gyr":     float(10**age_fit / 1e9),
-        # age_observed and age_resid are added in __main__ after catalogue lookup
-        "feh":         float(feh_fit),
-        "AV":          float(AV_fit),
-        "distance_pc": d_fit,
-        "chi2":        chi2,
-        "dof":         dof,
-        "red_chi2":    chi2 / dof if dof > 0 else np.nan,
-        "success":     bool(res.success),
-        "message":     str(res.message),
-        "bands_used":  bands_used,
-        "used_teff_constraint": bool(teff_obs is not None and teff_err is not None),
-        "used_feh_constraint":  bool(feh_obs  is not None and feh_err  is not None),
-        # ── Per-band photometry ───────────────────────────────────────────────
-        **obs_mags,     # BP_mag_obs,   G_mag_obs,   ...
-        **model_mags,   # BP_mag_model, G_mag_model, ...
-        **mag_resids,   # BP_mag_resid, G_mag_resid, ...
+    result = {
+        "mass":              float(mass_fit),
+        "age_log10yr":       float(age_fit),
+        "age_gyr":           float(10 ** age_fit / 1e9),
+        "feh":               float(feh_fit),
+        "AV":                float(AV_fit),
+        "distance_pc":       d_fit,
+        "chi2":              chi2,
+        "dof":               dof,
+        "red_chi2":          chi2 / dof if dof > 0 else np.nan,
+        "success":           bool(res.success),
+        "message":           str(res.message),
+        "bands_used":        bands_used,
+        "used_teff_initial": bool(teff_obs is not None and teff_err is not None),
+        "used_feh_initial":  bool(feh_obs  is not None and feh_err  is not None),
+        "used_age_initial":  bool(age_obs  is not None and age_err  is not None),
+        **obs_mags,
+        **model_mags,
+        **mag_resids,
     }
+
+    # ── Optional Monte Carlo uncertainties ───────────────────────────────────
+    if n_mc_samples > 0:
+        print(f"  Running Monte Carlo uncertainty estimation ({n_mc_samples} samples)…")
+        mc_errs = _monte_carlo_errors(
+            props,
+            best_fit_result=result,
+            n_samples=n_mc_samples,
+            mass_bounds=mass_bounds,
+            age_bounds=age_bounds,
+            feh_bounds=feh_bounds,
+            AV_bounds=AV_bounds,
+        )
+        result.update(mc_errs)   # adds *_mc_err keys
+
+    return result
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    stars = [
-        "TOI-6016", "Qatar-5", "WASP-93", "TOI-2046", "TOI-1224"
-    ]
+    # Set N_MC_SAMPLES > 0 to enable Monte Carlo error bars.
+    # Each star runs N_MC_SAMPLES extra fits — start small (e.g. 50) to check runtime.
+    N_MC_SAMPLES = 2000
+
+    full_list  = pd.read_csv(MASTER_CSV_PATH)
+    stars_list = full_list["hostname"].tolist()
+    stars_list = stars_list.drop_duplicates(subset=["hostname"], keep="first")
+    young_stars = full_list[full_list["st_age"] < 1.0]["hostname"].tolist()
+    stars      = young_stars[:100] 
 
     csv_file = "age_fit_results_scipy.csv"
 
     base_fieldnames = [
         "starname",
+        # ── Mass ──────────────────────────────────────────────────────────────
         "mass",
-        "mass_observed",      # st_mass from catalogue
-        "mass_resid",         # mass (model) - mass_observed
+        "mass_mc_err",
+        "mass_observed",
+        "mass_resid",
+        # ── Age ───────────────────────────────────────────────────────────────
         "age_log10yr",
         "age_gyr",
-        "age_observed",       # st_age from catalogue (Gyr)
-        "age_resid",          # age_gyr (model) - age_observed
+        "age_gyr_mc_err",
+        "age_observed",
+        "age_resid",
+        # ── [Fe/H] ────────────────────────────────────────────────────────────
         "feh",
-        "feh_observed",       # st_met from catalogue
-        "feh_resid",          # feh (model) - feh_observed
+        "feh_mc_err",
+        "feh_observed",
+        "feh_resid",
+        # ── Extinction & distance ─────────────────────────────────────────────
         "AV",
+        "AV_mc_err",
         "distance_pc",
+        "distance_pc_mc_err",
+        # ── Fit diagnostics ───────────────────────────────────────────────────
         "chi2",
         "dof",
         "red_chi2",
         "success",
         "message",
         "bands_used",
-        "used_teff_constraint",
-        "used_feh_constraint",
+        "used_teff_initial",
+        "used_feh_initial",
+        "used_age_initial",
     ]
 
     band_fieldnames: list[str] = []
@@ -410,27 +573,24 @@ if __name__ == "__main__":
     for star in stars:
         print(f"\n{'='*55}\nFitting {star}")
         try:
-            props      = read_star_row_from_csv(star, sigma_mag=True, sigma_parallax=0.1)
-            fit        = fit_mass_age_feh_from_props(props)
+            props = read_star_row_from_csv(star, sigma_mag=True, sigma_parallax=0.1)
+            fit   = fit_mass_age_feh_from_props(props, n_mc_samples=N_MC_SAMPLES)
             fit["starname"] = star
 
             # ── Attach observed parameters and residuals ──────────────────────
             obs_params = get_observed_stellar_params(star)
 
-            # Age
             age_obs              = obs_params["age_gyr"]
             fit["age_observed"]  = age_obs if age_obs is not None else np.nan
             fit["age_resid"]     = float(fit["age_gyr"] - age_obs) if age_obs is not None else np.nan
 
-            # Mass
             mass_obs             = obs_params["mass"]
             fit["mass_observed"] = mass_obs if mass_obs is not None else np.nan
             fit["mass_resid"]    = float(fit["mass"] - mass_obs) if mass_obs is not None else np.nan
 
-            # [Fe/H]
-            feh_obs              = obs_params["feh"]
-            fit["feh_observed"]  = feh_obs if feh_obs is not None else np.nan
-            fit["feh_resid"]     = float(fit["feh"] - feh_obs) if feh_obs is not None else np.nan
+            feh_obs_cat          = obs_params["feh"]
+            fit["feh_observed"]  = feh_obs_cat if feh_obs_cat is not None else np.nan
+            fit["feh_resid"]     = float(fit["feh"] - feh_obs_cat) if feh_obs_cat is not None else np.nan
 
             # ── Pretty-print photometry comparison ───────────────────────────
             print(f"  {'Band':<12} {'Observed':>10} {'Model':>10} {'Residual':>10}")
@@ -448,25 +608,41 @@ if __name__ == "__main__":
             def _fmt_signed(val: float) -> str:
                 return f"{val:+.3f}" if np.isfinite(val) else "N/A"
 
-            print(f"\n  {'Parameter':<14} {'Model':>10} {'Observed':>10} {'Residual':>10}")
-            print(f"  {'-'*46}")
-            print(f"  {'Age (Gyr)':<14} "
-                  f"{_fmt(fit['age_gyr']):>10} "
-                  f"{_fmt(fit['age_observed']):>10} "
-                  f"{_fmt_signed(fit['age_resid']):>10}")
-            print(f"  {'Mass (Msun)':<14} "
-                  f"{_fmt(fit['mass']):>10} "
-                  f"{_fmt(fit['mass_observed']):>10} "
-                  f"{_fmt_signed(fit['mass_resid']):>10}")
-            print(f"  {'[Fe/H]':<14} "
-                  f"{_fmt(fit['feh']):>10} "
-                  f"{_fmt(fit['feh_observed']):>10} "
-                  f"{_fmt_signed(fit['feh_resid']):>10}")
+            # Header adapts: show ±MC column only when MC was run
+            mc_ran = N_MC_SAMPLES > 0
+            if mc_ran:
+                print(f"\n  {'Parameter':<14} {'Model':>10} {'±MC':>8} {'Observed':>10} {'Residual':>10}")
+                print(f"  {'-'*54}")
+            else:
+                print(f"\n  {'Parameter':<14} {'Model':>10} {'Observed':>10} {'Residual':>10}")
+                print(f"  {'-'*46}")
+
+            for param, v_key, mc_key, obs_v, r_key in [
+                ("Age (Gyr)",   "age_gyr", "age_gyr_mc_err", fit["age_observed"],  "age_resid"),
+                ("Mass (Msun)", "mass",    "mass_mc_err",    fit["mass_observed"], "mass_resid"),
+                ("[Fe/H]",      "feh",     "feh_mc_err",     fit["feh_observed"],  "feh_resid"),
+            ]:
+                if mc_ran:
+                    print(
+                        f"  {param:<14} "
+                        f"{_fmt(fit[v_key]):>10} "
+                        f"{_fmt(fit.get(mc_key, np.nan)):>8} "
+                        f"{_fmt(obs_v):>10} "
+                        f"{_fmt_signed(fit[r_key]):>10}"
+                    )
+                else:
+                    print(
+                        f"  {param:<14} "
+                        f"{_fmt(fit[v_key]):>10} "
+                        f"{_fmt(obs_v):>10} "
+                        f"{_fmt_signed(fit[r_key]):>10}"
+                    )
+
             print(f"\n  AV: {fit['AV']:.3f}  |  red_chi2: {fit['red_chi2']:.2f}")
 
             # ── Collect for summary ───────────────────────────────────────────
             resid_row: dict = {
-                "starname":  star,
+                "starname":   star,
                 "age_resid":  fit["age_resid"],
                 "mass_resid": fit["mass_resid"],
                 "feh_resid":  fit["feh_resid"],
@@ -493,7 +669,6 @@ if __name__ == "__main__":
     if all_residuals:
         resid_df = pd.DataFrame(all_residuals).set_index("starname")
 
-        # Stellar params first, then bands
         col_order = (
             ["age_resid", "mass_resid", "feh_resid"]
             + [f"{b}_resid" for b in BANDS_ALL]
@@ -534,6 +709,3 @@ if __name__ == "__main__":
                 f"{int(n_valid[col]):>5}"
             )
         print(f"{'='*65}\n")
-
-        
-

@@ -33,6 +33,11 @@ def read_star_row_from_csv(
     if not np.isnan(row["st_met"]):
         props["feh"] = row["st_met"]
         props["feh_err"] = 0.1  # placeholder error (0.1 dex)
+    
+    #age
+    if not np.isnan(row["st_age"]):
+        props["age_gyr"] = row["st_age"]
+        props["age_gyr_err"] = row["st_ageerr1"] if not np.isnan(row["st_ageerr1"]) else row["st_ageerr2"] if not np.isnan(row["st_ageerr2"]) else 0.5  # use err1 if available, else err2, else default to 0.5 Gyr
    
     # band map from master_phot_csv to MIST keys
     band_map = {
@@ -50,5 +55,5 @@ def read_star_row_from_csv(
             props[iso_key] = phot_row[csv_col]
             props[f"{iso_key}_err"] = sigmamag
 
-
+    print(len(props))
     return props
