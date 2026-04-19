@@ -513,18 +513,28 @@ def fit_mass_age_feh_from_props(
 if __name__ == "__main__":
     # Set N_MC_SAMPLES > 0 to enable Monte Carlo error bars.
     # Each star runs N_MC_SAMPLES extra fits — start small (e.g. 50) to check runtime.
-    N_MC_SAMPLES = 2000
+    N_MC_SAMPLES = 20000
 
-    full_list  = pd.read_csv(MASTER_CSV_PATH)
-    stars_list = full_list["hostname"].tolist()
-    stars_list = stars_list.drop_duplicates(subset=["hostname"], keep="first")
-    young_stars = full_list[full_list["st_age"] < 1.0]["hostname"].tolist()
-    stars      = young_stars[:100] 
+    full_list = pd.read_csv(MASTER_CSV_PATH)
+    stars_list = full_list["hostname"].drop_duplicates(keep="first").tolist()
+    young_stars = full_list[full_list["st_age"] < 1.0]["hostname"].drop_duplicates(keep="first").tolist()
+    #stars = young_stars[225:]
+    #stars that have tic id in k2_data_2.csv
+    k2_data_path = "k2_star_ages.csv"
+    k2_df = pd.read_csv(k2_data_path)
+    tic_ids_in_k2 = set(k2_df["tic_id"].dropna().astype(int).tolist())
+    stars = []
+    for star in stars_list:
+        tic_id = full_list[full_list["hostname"] == star]["tic_id"].values[0]
+        if tic_id in tic_ids_in_k2:
+            stars.append(star)
 
-    csv_file = "age_fit_results_scipy.csv"
+
+    csv_file = "age_fit_results_scipy_ticid.csv"
 
     base_fieldnames = [
         "starname",
+        "tic_id",
         # ── Mass ──────────────────────────────────────────────────────────────
         "mass",
         "mass_mc_err",
@@ -576,7 +586,7 @@ if __name__ == "__main__":
             props = read_star_row_from_csv(star, sigma_mag=True, sigma_parallax=0.1)
             fit   = fit_mass_age_feh_from_props(props, n_mc_samples=N_MC_SAMPLES)
             fit["starname"] = star
-
+            fit["tic_id"]   = props.get("tic_id", np.nan)
             # ── Attach observed parameters and residuals ──────────────────────
             obs_params = get_observed_stellar_params(star)
 

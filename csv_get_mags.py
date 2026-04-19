@@ -13,12 +13,14 @@ def read_star_row_from_csv(
     phot_df = pd.read_csv(master_phot_csv_path)
     index = master_df[master_df["hostname"] == host_name].index[0]
     phot_index = phot_df[phot_df["hostname"] == host_name].index[0]
+    tic_id = master_df.loc[index, "tic_id"]
     # Select row
     row = master_df.iloc[index]
     phot_row = phot_df.iloc[phot_index]
 
     # Build props dict
     props = {}
+    props["tic_id"] = tic_id
 
     # --- Parallax (required) ---
     if not np.isnan(row["st_parallax_mas"]):
