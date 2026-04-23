@@ -2,10 +2,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-results = pd.read_csv("age_fit_results_scipy_20000run.csv")
+results = pd.read_csv("results/age_fit_results_scipy_20000run.csv")
 results = results.drop_duplicates(subset=["starname"], keep="first")
 results = results[results["age_observed"] > 0]
 
+print(results[results["age_gyr"] > 10][["starname", "age_gyr", "age_observed"]])
+print(results[results["age_gyr"] > 6][["starname", "age_gyr", "age_observed"]])
 # --- Load and merge observed age errors ---
 targets = pd.read_csv("mega_target_list.csv")
 age_errors = (targets[["hostname", "st_ageerr1", "st_ageerr2"]]
@@ -29,6 +31,18 @@ err_lower = np.sqrt((sigma_a / b)**2 + (a / b**2 * sigma_b_upper)**2)
 
 results["rel_err_upper"] = err_upper.fillna(0)
 results["rel_err_lower"] = err_lower.fillna(0)
+
+#split on catalog type
+results["catalog"] = results["starname"].str.split("-").str[0]
+print(np.unique(results["catalog"]))
+#print count of each catalog type
+print(results["catalog"].value_counts())
+
+kepler_results = results[results["catalog"] == "Kepler"]
+k2_results = results[results["catalog"] == "K2"]
+toi_results = results[results["catalog"] == "TOI"]
+wasp_results = results[results["catalog"] == "WASP"]
+other_results = results[~results["catalog"].isin(["Kepler", "K2", "TOI", "WASP"])]
 
 # --- Split on [Fe/H] ---
 with_feh    = results[pd.notna(results["feh_observed"])]
@@ -62,18 +76,111 @@ plt.errorbar(
 )   
 plt.plot([0, 1], [0, 1], linestyle="--", color="black", label="Perfect Fit", linewidth=1)
 # Add shaded region for average table age uncertainty
-x_vals = np.linspace(0.01, 1, 100)
+x_vals = np.linspace(0, 1, 100)
 plt.fill_between(x_vals, x_vals - avg_table_uncertainty, x_vals + avg_table_uncertainty, alpha=0.2, color='gray', label=f'Median Table Age Uncertainty (±{avg_table_uncertainty:.3f} Gyr)')
-plt.xlim(0.01, 1)
-plt.ylim(0.01, 1)
 plt.title("Model Age vs. Table Age")
 plt.xlabel("Table Age (Gyr)")
 plt.ylabel("Modeled Age (Gyr)")
+plt.xlim(0., 1)
 plt.legend()
 plt.grid(which="both", alpha=0.3)
 plt.tight_layout()
-plt.savefig("modelvstableageshadedzoomed.png", dpi=150)
+plt.savefig("plots/modelvstableageshaded.png", dpi=150)
 plt.close()
+
+#plot same as above but split on catalog type
+#Plot Table Age vs. Model Age
+plt.figure(figsize=(12, 6))
+plt.errorbar(
+    kepler_results["age_observed"], kepler_results["age_gyr"],
+    yerr=kepler_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=with_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"Kepler n={len(kepler_results)}"
+)   
+plt.errorbar(
+    toi_results["age_observed"], toi_results["age_gyr"],     
+    yerr=toi_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=without_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"TOI n={len(toi_results)}"
+)   
+plt.errorbar(
+    k2_results["age_observed"], k2_results["age_gyr"],     
+    yerr=k2_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=without_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"K2 n={len(k2_results)}"
+)   
+plt.errorbar(
+    wasp_results["age_observed"], wasp_results["age_gyr"],     
+    yerr=wasp_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=without_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"WASP n={len(wasp_results)}"
+)   
+plt.errorbar(
+    other_results["age_observed"], other_results["age_gyr"],     
+    yerr=other_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=without_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"Other n={len(other_results)}"
+)   
+plt.plot([0, 1], [0, 1], linestyle="--", color="black", label="Perfect Fit", linewidth=1)
+# Add shaded region for average table age uncertainty
+x_vals = np.linspace(0, 1, 100)
+plt.fill_between(x_vals, x_vals - avg_table_uncertainty, x_vals + avg_table_uncertainty, alpha=0.2, color='gray', label=f'Median Table Age Uncertainty (±{avg_table_uncertainty:.3f} Gyr)')
+plt.title("Model Age vs. Table Age")
+plt.xlabel("Table Age (Gyr)")
+plt.ylabel("Modeled Age (Gyr)")
+plt.xlim(0., 1)
+plt.legend()
+plt.grid(which="both", alpha=0.3)
+plt.tight_layout()
+plt.savefig("plots/modelvstableageshadedcatalog.png", dpi=150)
+plt.close()
+
+plt.figure(figsize=(12, 6))
+plt.errorbar(
+    kepler_results["age_observed"], kepler_results["age_gyr"],
+    yerr=kepler_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=with_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"Kepler n={len(kepler_results)}"
+)   
+plt.errorbar(
+    toi_results["age_observed"], toi_results["age_gyr"],     
+    yerr=toi_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=without_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"TOI n={len(toi_results)}"
+)   
+plt.errorbar(
+    k2_results["age_observed"], k2_results["age_gyr"],     
+    yerr=k2_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=without_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"K2 n={len(k2_results)}"
+)   
+plt.errorbar(
+    wasp_results["age_observed"], wasp_results["age_gyr"],     
+    yerr=wasp_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=without_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"WASP n={len(wasp_results)}"
+)   
+plt.errorbar(
+    other_results["age_observed"], other_results["age_gyr"],     
+    yerr=other_results["age_gyr_mc_err"], fmt='o', alpha=0.7, capsize=2, elinewidth=0.8,
+    #xerr=without_feh[["st_ageerr2", "st_ageerr1"]].abs().values.T,
+    capthick=0.8, markersize=5, label=f"Other n={len(other_results)}"
+)   
+plt.plot([0, 1], [0, 1], linestyle="--", color="black", label="Perfect Fit", linewidth=1)
+# Add shaded region for average table age uncertainty
+x_vals = np.linspace(0, 1, 100)
+plt.fill_between(x_vals, x_vals - avg_table_uncertainty, x_vals + avg_table_uncertainty, alpha=0.2, color='gray', label=f'Median Table Age Uncertainty (±{avg_table_uncertainty:.3f} Gyr)')
+plt.title("Model Age vs. Table Age")
+plt.xlabel("Table Age (Gyr)")
+plt.ylabel("Modeled Age (Gyr)")
+plt.xlim(0., 1)
+plt.ylim(-0.1, 1.5)
+plt.grid(which="both", alpha=0.3)
+plt.legend()
+plt.tight_layout()
+plt.savefig("plots/modelvstableageshadedzoomed.png", dpi=150)
+plt.close()
+
 
 # --- Plot Relative Age Errors---
 plt.figure(figsize=(12, 6))
@@ -102,7 +209,7 @@ plt.title("Relative Age Error vs. Table Age")
 plt.legend()
 plt.grid(which="both", alpha=0.3)
 plt.tight_layout()
-plt.savefig("relativeageerror.png", dpi=150)
+plt.savefig("plots/relativeageerror.png", dpi=150)
 plt.close()
 
 # --- Plot Relative Age Errors for points with table uncertainty <= 20% ---
@@ -146,7 +253,7 @@ plt.title("Relative Age Error vs. Table Age (Table Uncertainty ≤ 20%)")
 plt.legend()
 plt.grid(which="both", alpha=0.3)
 plt.tight_layout()
-plt.savefig("relativeageerror_filtered.png", dpi=150)
+plt.savefig("plots/relativeageerror_filtered.png", dpi=150)
 plt.close()
 
 # --- Plot Model Age vs. Table Age (filtered for table uncertainty <= 20%) ---
@@ -176,5 +283,5 @@ plt.ylabel("Modeled Age (Gyr)")
 plt.legend()
 plt.grid(which="both", alpha=0.3)
 plt.tight_layout()
-plt.savefig("modelvstableageshadedzoomed_filtered.png", dpi=150)
+plt.savefig("plots/modelvstableageshadedzoomed_filtered.png", dpi=150)
 plt.close()

@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 #My results
-results = pd.read_csv("age_fit_results_scipy_20000run.csv")
+results = pd.read_csv("results/age_fit_results_scipy_20000run.csv")
 results = results.drop_duplicates(subset=["starname"], keep="first")
 """ #Taylor's results
 taylor_results = pd.read_csv("k2_star_ages.csv")
@@ -26,7 +26,7 @@ plt.grid()
 plt.show()
 plt.close() """
 #James' results
-james_results = pd.read_csv("interpolate_20260409_125607_candidate_fits.csv")
+james_results = pd.read_csv("results/interpolate_20260409_125607_candidate_fits.csv")
 james_results = james_results.drop_duplicates(subset=["hostname"], keep="first")
 #convert age_yr to age_gyr
 james_results["age_gyr"] = james_results["age_yr"] / 1e9
@@ -34,24 +34,20 @@ james_results["age_gyr"] = james_results["age_yr"] / 1e9
 merged_results = pd.merge(results, james_results, left_on="starname", right_on="hostname", suffixes=('_mine', '_james'))
 #print column names of merged results
 print(merged_results.columns)
+print(len(merged_results))
 #plot my age vs. James' age
 plt.figure(figsize=(8, 8))
-plt.errorbar(merged_results["age_gyr_mine"], merged_results["age_gyr_james"], xerr = merged_results["age_gyr_mc_err"], fmt = "o", alpha=0.7)
+plt.errorbar(merged_results["age_gyr_mine"], merged_results["age_gyr_james"], xerr = merged_results["age_gyr_mc_err"], fmt = "o", alpha=0.7, capsize=5)
 plt.plot([0, 14], [0, 14], 'r--')  # 1:1 line
 plt.xlabel("Lee's Age (Gyr)")
 plt.ylabel("James' Age (Gyr)")
 plt.title("Comparison of Age Estimates")
+plt.xscale("log")
+plt.yscale("log")
 plt.xlim(0, 1)
 plt.ylim(0, 1)
 plt.grid()
-plt.savefig("lee_vs_james_age_comparison.png")
-plt.close()
-
-#corner of age_gyr_mine, age_gyr_james, age_observered
-import corner
-corner_data = merged_results[["age_gyr_mine", "age_gyr_james", "age_observed"]].dropna()
-corner.corner(corner_data, labels=["Lee's Age (Gyr)", "James' Age (Gyr)", "Observed Age (Gyr)"], show_titles=True)
-plt.savefig("corner_plot.png")
+plt.savefig("plots/lee_vs_james_age_comparison_log.png")
 plt.close()
 
 #print stars where lee's age is less than 0.2 Gyr but James' age is greater than 0.2 Gyr
