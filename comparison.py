@@ -26,18 +26,30 @@ plt.grid()
 plt.show()
 plt.close() """
 #James' results
-james_results = pd.read_csv("results/interpolate_20260409_125607_candidate_fits.csv")
+james_results = pd.read_csv("results/interpolate_20260409_125607_candidate_james_fits.csv")
 james_results = james_results.drop_duplicates(subset=["hostname"], keep="first")
+
+#haygen's results
+haygen_results = pd.read_csv("results/interpolator_results_haygen.csv")
+haygen_results = haygen_results.drop_duplicates(subset=["hostname"], keep="first")
+print(haygen_results.columns)
+
 #convert age_yr to age_gyr
 james_results["age_gyr"] = james_results["age_yr"] / 1e9
+haygen_results["age_gyr"] = haygen_results["age_yr_model"] / 1e9
+haygen_results["age_gyr_err"] = haygen_results["age_yr_err"] / 1e9
+
 #filter for those that are in both, my under starname and James under hostname
-merged_results = pd.merge(results, james_results, left_on="starname", right_on="hostname", suffixes=('_mine', '_james'))
+jl_merged_results = pd.merge(results, james_results, left_on="starname", right_on="hostname", suffixes=('_mine', '_james'))
+hl_merged_results = pd.merge(results, haygen_results, left_on="starname", right_on="hostname", suffixes=('_mine', '_haygen'))
+#print header of hl merged results
+print(hl_merged_results.columns)
 #print column names of merged results
-print(merged_results.columns)
-print(len(merged_results))
+print(jl_merged_results.columns)
+print(len(jl_merged_results))
 #plot my age vs. James' age
 plt.figure(figsize=(8, 8))
-plt.errorbar(merged_results["age_gyr_mine"], merged_results["age_gyr_james"], xerr = merged_results["age_gyr_mc_err"], fmt = "o", alpha=0.7, capsize=5)
+plt.errorbar(jl_merged_results["age_gyr_mine"], jl_merged_results["age_gyr_james"], xerr = jl_merged_results["age_gyr_mc_err"], fmt = "o", alpha=0.7, capsize=5)
 plt.plot([0, 14], [0, 14], 'r--')  # 1:1 line
 plt.xlabel("Lee's Age (Gyr)")
 plt.ylabel("James' Age (Gyr)")
@@ -50,13 +62,25 @@ plt.grid()
 plt.savefig("plots/lee_vs_james_age_comparison_log.png")
 plt.close()
 
+#plot my age vs. Haygen's age
+plt.figure(figsize=(8, 8))
+plt.errorbar(hl_merged_results["age_gyr_mine"], hl_merged_results["age_gyr_haygen"], xerr = hl_merged_results["age_gyr_mc_err"], yerr = hl_merged_results["age_gyr_err"], fmt = "o", alpha=0.7, capsize=5)
+plt.plot([0, 14], [0, 14], 'r--')  # 1:1 line
+plt.xlabel("Lee's Age (Gyr)")
+plt.ylabel("Haygen's Age (Gyr)")
+plt.title("Comparison of Age Estimates")
+plt.xlim(0, 1)
+plt.ylim(0, 1)
+plt.grid()
+plt.savefig("plots/lee_vs_haygen_age_comparison.png")
+plt.close()
 #print stars where lee's age is less than 0.2 Gyr but James' age is greater than 0.2 Gyr
-young_lee_old_james = merged_results[(merged_results["age_gyr_mine"] < 0.2) & (merged_results["age_gyr_james"] > 0.2)]
+young_lee_old_james = jl_merged_results[(jl_merged_results["age_gyr_mine"] < 0.2) & (jl_merged_results["age_gyr_james"] > 0.2)]
 # Stars of interest
 stars = young_lee_old_james["starname"].tolist()
 
 # Keep only those rows
-subset = merged_results[merged_results["starname"].isin(stars)].copy()
+subset = jl_merged_results[jl_merged_results["starname"].isin(stars)].copy()
 
 # Bands to include
 bands = ["BP", "G", "RP", "J", "H", "K"]
@@ -85,5 +109,3 @@ long_table = pd.DataFrame(rows)
 
 # Optional: round for readability
 long_table = long_table.round(4)
-
-print(long_table.to_string(index=False))
